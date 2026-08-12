@@ -83,8 +83,8 @@ def generate_label(vendor_name: str, vendor_id: str, vehicle_no: str,
     row_ys = [ty0 + i * row_h for i in range(n_rows + 1)]
 
     # ---- fonts (large, readable) --------------------------------------------
-    label_font = _font(FONT_BOLD, int(row_h * 0.30))
-    value_font = _font(FONT_REGULAR, int(row_h * 0.30))
+    max_label_size = int(row_h * 0.42)
+    max_value_size = int(row_h * 0.42)
 
     serial_no = build_serial_no(dt, seq)
 
@@ -95,16 +95,21 @@ def generate_label(vendor_name: str, vendor_id: str, vehicle_no: str,
         ("Serial No", serial_no),
     ]
 
-    pad_x = int(table_w * 0.02)
+    pad_x = int(table_w * 0.025)
 
-    # Size the label column to the widest label text so bold labels never
-    # collide with the value column, regardless of font size.
-    max_label_w = max(
-        draw.textbbox((0, 0), label, font=label_font)[2] for label, _ in rows
-    )
-    col_split = tx0 + pad_x + max_label_w + pad_x * 2
-    # keep a sane minimum/maximum so the value column always has room
-    col_split = max(tx0 + int(table_w * 0.22), min(col_split, tx0 + int(table_w * 0.45)))
+    # Fixed column split (label column gets ~34% of the table width, like the
+    # reference layout), independent of font size.
+    col_split = tx0 + int(table_w * 0.34)
+    label_col_w = col_split - tx0 - pad_x * 2
+    value_col_w = tx1 - col_split - pad_x * 2
+
+    def _fit_font(text, path, max_size, max_w, min_size=14):
+        size = max_size
+        font = _font(path, size)
+        while draw.textbbox((0, 0), text, font=font)[2] > max_w and size > min_size:
+            size -= 2
+            font = _font(path, size)
+        return font
 
     # ---- grid lines -------------------------------------------------------
     line_w = 2
@@ -116,17 +121,11 @@ def generate_label(vendor_name: str, vendor_id: str, vehicle_no: str,
 
     for i, (label, value) in enumerate(rows):
         y_center = row_ys[i] + row_h / 2
-        draw.text((tx0 + pad_x, y_center), label, font=label_font, fill=BLACK, anchor="lm")
 
-        # Shrink the value font if needed so long values (e.g. serial no)
-        # never overflow past the right edge of the table.
-        max_value_w = tx1 - (col_split + pad_x * 2)
-        v_font = value_font
-        v_size = v_font.size
-        while draw.textbbox((0, 0), value, font=v_font)[2] > max_value_w and v_size > 10:
-            v_size -= 2
-            v_font = _font(FONT_REGULAR, v_size)
+        l_font = _fit_font(label, FONT_BOLD, max_label_size, label_col_w)
+        draw.text((tx0 + pad_x, y_center), label, font=l_font, fill=BLACK, anchor="lm")
 
+        v_font = _fit_font(value, FONT_REGULAR, max_value_size, value_col_w)
         draw.text((col_split + pad_x, y_center), value, font=v_font, fill=BLACK, anchor="lm")
 
     return img
