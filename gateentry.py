@@ -2,17 +2,17 @@
 Vendor Label Generator — single-file Streamlit app.
 
 Upload an Excel mastersheet with columns: Vendor Name, Vendor ID, Vehicle No.
-For every row it draws a 100 mm x 75 mm label matching the reference design:
+For every row it draws a 100 mm x 75 mm label:
 
 +------------------------------------------------+
 | Vendor Name | Pheonix Harness                  |
 | Vendor ID   | V01234                           |
 | Vehicle No  | MH04AB1456                       |
-| Serial No   | 26 08 04 -10:18 -001             |
-|             |  YYYY  MM   DD   HH:MM   Serial   |
+| Serial No   | 260812-11:11-001                 |
 +------------------------------------------------+
 
-Serial No is auto-generated as YYMMDD-HH:MM-Seq.
+Serial No = YYMMDD-HH:MM-Seq, stamped with the real date/time at the moment
+the label is generated.
 
 Run:      streamlit run app.py
 Deploy:   push this single file + requirements.txt to a repo,
@@ -41,7 +41,6 @@ FONT_BOLD = FONT_DIR + "DejaVuSans-Bold.ttf"
 FONT_REGULAR = FONT_DIR + "DejaVuSans.ttf"
 
 BLACK = (0, 0, 0)
-RED = (220, 0, 0)
 WHITE = (255, 255, 255)
 
 
@@ -54,7 +53,7 @@ def _font(path, size):
 
 
 def build_serial_no(dt: datetime, seq: int) -> str:
-    """Serial format: YYMMDD-HH:MM-SSS (matches the reference label)."""
+    """Serial format: YYMMDD-HH:MM-SSS."""
     return f"{dt:%y%m%d}-{dt:%H:%M}-{seq:03d}"
 
 
@@ -78,85 +77,57 @@ def generate_label(vendor_name: str, vendor_id: str, vehicle_no: str,
     table_w = tx1 - tx0
     table_h = ty1 - ty0
 
-    col_split = tx0 + int(table_w * 0.30)   # divider: label column vs value column
+    # 4 equal-height rows filling the whole table (no extra explanatory row)
+    n_rows = 4
+    row_h = table_h / n_rows
+    row_ys = [ty0 + i * row_h for i in range(n_rows + 1)]
 
-    # 4 label rows + 1 taller breakdown row
-    n_label_rows = 4
-    row_h = int(table_h * 0.155)
-    breakdown_h = table_h - row_h * n_label_rows
-    row_ys = [ty0 + i * row_h for i in range(n_label_rows + 1)]
-    breakdown_top = row_ys[-1]
-    breakdown_bottom = ty0 + table_h
+    # ---- fonts (large, readable) --------------------------------------------
+    label_font = _font(FONT_BOLD, int(row_h * 0.30))
+    value_font = _font(FONT_REGULAR, int(row_h * 0.30))
 
-    # ---- grid lines -------------------------------------------------------
-    line_w = 2
-    for y in row_ys:
-        draw.line([tx0, y, tx1, y], fill=BLACK, width=line_w)
-    draw.line([tx0, breakdown_bottom, tx1, breakdown_bottom], fill=BLACK, width=line_w)
-    draw.line([col_split, ty0, col_split, row_ys[4]], fill=BLACK, width=line_w)
-    draw.line([tx0, ty0, tx0, breakdown_bottom], fill=BLACK, width=line_w)
-    draw.line([tx1, ty0, tx1, breakdown_bottom], fill=BLACK, width=line_w)
-
-    # ---- fonts --------------------------------------------------------------
-    label_font = _font(FONT_BOLD, int(row_h * 0.34))
-    value_font = _font(FONT_REGULAR, int(row_h * 0.34))
-    serial_font = _font(FONT_REGULAR, int(row_h * 0.34))
-    tag_font = _font(FONT_REGULAR, int(row_h * 0.20))
+    serial_no = build_serial_no(dt, seq)
 
     rows = [
         ("Vendor Name", vendor_name),
         ("Vendor ID", vendor_id),
         ("Vehicle No", vehicle_no),
-        ("Serial No", None),  # drawn specially below
+        ("Serial No", serial_no),
     ]
 
     pad_x = int(table_w * 0.02)
+
+    # Size the label column to the widest label text so bold labels never
+    # collide with the value column, regardless of font size.
+    max_label_w = max(
+        draw.textbbox((0, 0), label, font=label_font)[2] for label, _ in rows
+    )
+    col_split = tx0 + pad_x + max_label_w + pad_x * 2
+    # keep a sane minimum/maximum so the value column always has room
+    col_split = max(tx0 + int(table_w * 0.22), min(col_split, tx0 + int(table_w * 0.45)))
+
+    # ---- grid lines -------------------------------------------------------
+    line_w = 2
+    for y in row_ys:
+        draw.line([tx0, y, tx1, y], fill=BLACK, width=line_w)
+    draw.line([col_split, ty0, col_split, row_ys[-1]], fill=BLACK, width=line_w)
+    draw.line([tx0, ty0, tx0, row_ys[-1]], fill=BLACK, width=line_w)
+    draw.line([tx1, ty0, tx1, row_ys[-1]], fill=BLACK, width=line_w)
+
     for i, (label, value) in enumerate(rows):
         y_center = row_ys[i] + row_h / 2
         draw.text((tx0 + pad_x, y_center), label, font=label_font, fill=BLACK, anchor="lm")
-        if value is not None:
-            draw.text((col_split + pad_x, y_center), value, font=value_font, fill=BLACK, anchor="lm")
 
-    # ---- Serial No value with colored segment boxes -------------------------
-    yyyy = f"{dt:%y}"
-    mm = f"{dt:%m}"
-    dd = f"{dt:%d}"
-    hhmm = f"{dt:%H:%M}"
-    ser = f"{seq:03d}"
+        # Shrink the value font if needed so long values (e.g. serial no)
+        # never overflow past the right edge of the table.
+        max_value_w = tx1 - (col_split + pad_x * 2)
+        v_font = value_font
+        v_size = v_font.size
+        while draw.textbbox((0, 0), value, font=v_font)[2] > max_value_w and v_size > 10:
+            v_size -= 2
+            v_font = _font(FONT_REGULAR, v_size)
 
-    serial_row_center = row_ys[3] + row_h / 2
-    cursor_x = col_split + pad_x
-    box_pad = 6
-
-    # layout: yyyy mm dd -hhmm -ser  (e.g. "26 08 04 -10:18 -001")
-    seg_texts_with_sep = [yyyy, mm, dd, "-" + hhmm, "-" + ser]
-
-    box_centers = []
-    for seg in seg_texts_with_sep:
-        display = seg.lstrip("-")
-        prefix = "-" if seg.startswith("-") else ""
-        if prefix:
-            draw.text((cursor_x, serial_row_center), prefix, font=serial_font, fill=BLACK, anchor="lm")
-            bbox = draw.textbbox((cursor_x, serial_row_center), prefix, font=serial_font, anchor="lm")
-            cursor_x = bbox[2] + 2
-
-        bbox = draw.textbbox((cursor_x, serial_row_center), display, font=serial_font, anchor="lm")
-        box = [bbox[0] - box_pad, bbox[1] - box_pad, bbox[2] + box_pad, bbox[3] + box_pad]
-        draw.rectangle(box, outline=RED, width=2)
-        draw.text((cursor_x, serial_row_center), display, font=serial_font, fill=BLACK, anchor="lm")
-        box_centers.append(((box[0] + box[2]) / 2, box[3]))
-        cursor_x = box[2] + 10
-
-    # ---- breakdown labels + arrows ------------------------------------------
-    tags = ["YYYY", "MM", "DD", "HH:MM", "Serial No."]
-    tag_y = breakdown_top + (breakdown_h * 0.62)
-    arrow_top_y = breakdown_top + (breakdown_h * 0.12)
-
-    for (bx, by), tag in zip(box_centers, tags):
-        draw.line([bx, arrow_top_y, bx, tag_y - 4], fill=RED, width=2)
-        ah = 6
-        draw.polygon([(bx - ah, tag_y - 4 - ah), (bx + ah, tag_y - 4 - ah), (bx, tag_y - 4)], fill=RED)
-        draw.text((bx, tag_y + 4), tag, font=tag_font, fill=BLACK, anchor="ma")
+        draw.text((col_split + pad_x, y_center), value, font=v_font, fill=BLACK, anchor="lm")
 
     return img
 
@@ -172,23 +143,16 @@ REQUIRED_COLS = ["Vendor Name", "Vendor ID", "Vehicle No"]
 st.title("Vendor Label Generator")
 st.caption(
     "Upload a mastersheet (Excel) with columns **Vendor Name**, **Vendor ID**, "
-    "**Vehicle No**. A 100 mm x 75 mm label is generated for every row, in the "
-    "same format as the reference label (Serial No = YYMMDD-HH:MM-Seq)."
+    "**Vehicle No**. A 100 mm x 75 mm label is generated for every row. "
+    "Serial No (YYMMDD-HH:MM-Seq) is stamped with the real date/time at the "
+    "moment you click Generate."
 )
 
 with st.sidebar:
     st.header("Settings")
-    use_now = st.checkbox("Stamp all labels with current date/time", value=True)
-    if not use_now:
-        d = st.date_input("Date to stamp on labels", value=datetime.now().date())
-        t = st.time_input("Time to stamp on labels", value=datetime.now().time())
-        chosen_dt = datetime.combine(d, t)
-    else:
-        chosen_dt = None
-
     start_seq = st.number_input("Starting serial sequence", min_value=1, value=1, step=1)
     seq_reset_daily = st.checkbox(
-        "Restart sequence at 1 for each new date in the sheet", value=False
+        "Restart sequence at 1 for each new date", value=False
     )
 
     st.markdown("---")
@@ -231,39 +195,32 @@ if uploaded is not None:
     st.success(f"Loaded {len(df)} row(s) from the mastersheet.")
     st.dataframe(df[REQUIRED_COLS], use_container_width=True)
 
-    # ---- assign a datetime + running sequence to every row ----------------
-    base_dt = chosen_dt or datetime.now()
-    rows = []
-    seq_by_date = {}
-    running_seq = int(start_seq)
-    for _, r in df.iterrows():
-        row_dt = base_dt
-        if seq_reset_daily:
-            key = row_dt.date()
-            seq_by_date[key] = seq_by_date.get(key, int(start_seq) - 1) + 1
-            seq = seq_by_date[key]
-        else:
-            seq = running_seq
-            running_seq += 1
-        rows.append(
-            {
-                "vendor_name": str(r["Vendor Name"]),
-                "vendor_id": str(r["Vendor ID"]),
-                "vehicle_no": str(r["Vehicle No"]),
-                "dt": row_dt,
-                "seq": seq,
-                "serial_no": build_serial_no(row_dt, seq),
-            }
-        )
-
-    preview_df = pd.DataFrame(
-        [{"Vendor Name": x["vendor_name"], "Vendor ID": x["vendor_id"],
-          "Vehicle No": x["vehicle_no"], "Serial No": x["serial_no"]} for x in rows]
-    )
-    st.subheader("Labels to be generated")
-    st.dataframe(preview_df, use_container_width=True)
-
     if st.button("Generate labels", type="primary"):
+        # Real date/time at the moment of generation, used for every row.
+        gen_dt = datetime.now()
+
+        rows = []
+        seq_by_date = {}
+        running_seq = int(start_seq)
+        for _, r in df.iterrows():
+            if seq_reset_daily:
+                key = gen_dt.date()
+                seq_by_date[key] = seq_by_date.get(key, int(start_seq) - 1) + 1
+                seq = seq_by_date[key]
+            else:
+                seq = running_seq
+                running_seq += 1
+            rows.append(
+                {
+                    "vendor_name": str(r["Vendor Name"]),
+                    "vendor_id": str(r["Vendor ID"]),
+                    "vehicle_no": str(r["Vehicle No"]),
+                    "dt": gen_dt,
+                    "seq": seq,
+                    "serial_no": build_serial_no(gen_dt, seq),
+                }
+            )
+
         images = []
         progress = st.progress(0.0)
         for i, r in enumerate(rows):
