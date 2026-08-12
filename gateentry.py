@@ -45,6 +45,11 @@ PRINT_DPI = round(MM_TO_PX * 25.4)  # ~305 dpi -> so viewers/printers render
                                      # physical size instead of guessing 72dpi
                                      # and blowing the page up huge.
 
+# Text size is FIXED here in code (no on-screen slider / manual control).
+# This is the fraction of each row's height the font is sized to.
+# Raise/lower this single number to change text size everywhere.
+TEXT_SIZE_FACTOR = 0.42
+
 FONT_DIR = "/usr/share/fonts/truetype/dejavu/"
 FONT_BOLD = FONT_DIR + "DejaVuSans-Bold.ttf"
 FONT_REGULAR = FONT_DIR + "DejaVuSans.ttf"
@@ -67,7 +72,7 @@ def build_serial_no(dt: datetime, seq: int) -> str:
 
 
 def generate_label(vendor_name: str, vendor_id: str, vehicle_no: str,
-                    dt: datetime, seq: int, font_scale: float = 1.0) -> Image.Image:
+                    dt: datetime, seq: int) -> Image.Image:
     img = Image.new("RGB", (LABEL_W, LABEL_H), WHITE)
     draw = ImageDraw.Draw(img)
 
@@ -91,9 +96,9 @@ def generate_label(vendor_name: str, vendor_id: str, vehicle_no: str,
     row_h = table_h / n_rows
     row_ys = [ty0 + i * row_h for i in range(n_rows + 1)]
 
-    # ---- fonts (large, readable; scaled by the user's Text size slider) -----
-    max_label_size = int(row_h * 0.42 * font_scale)
-    max_value_size = int(row_h * 0.42 * font_scale)
+    # ---- fonts (large, readable; fixed in code — no manual adjustment) ------
+    max_label_size = int(row_h * TEXT_SIZE_FACTOR)
+    max_value_size = int(row_h * TEXT_SIZE_FACTOR)
 
     serial_no = build_serial_no(dt, seq)
 
@@ -168,10 +173,6 @@ st.caption(
 
 with st.sidebar:
     st.header("Settings")
-    font_scale = st.slider(
-        "Text size", min_value=0.6, max_value=1.8, value=1.0, step=0.1,
-        help="Increase this if the text looks too small when printed or viewed.",
-    )
     start_seq = st.number_input("Starting serial sequence", min_value=1, value=1, step=1)
     seq_reset_daily = st.checkbox(
         "Restart sequence at 1 for each new date", value=False
@@ -250,7 +251,7 @@ if uploaded is not None:
         progress = st.progress(0.0)
         for i, r in enumerate(rows):
             img = generate_label(r["vendor_name"], r["vendor_id"], r["vehicle_no"],
-                                  r["dt"], r["seq"], font_scale=font_scale)
+                                  r["dt"], r["seq"])
             images.append((r, img))
             progress.progress((i + 1) / len(rows))
         progress.empty()
