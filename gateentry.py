@@ -23,6 +23,11 @@ import io
 import zipfile
 from datetime import datetime
 
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:  # Python <3.9 fallback
+    ZoneInfo = None
+
 import pandas as pd
 import streamlit as st
 from PIL import Image, ImageDraw, ImageFont
@@ -35,6 +40,10 @@ MM_TO_PX = 12                       # px per mm -> good screen/print quality
 LABEL_W_MM, LABEL_H_MM = 100, 75
 LABEL_W = LABEL_W_MM * MM_TO_PX     # 1200
 LABEL_H = LABEL_H_MM * MM_TO_PX     # 900
+PRINT_DPI = round(MM_TO_PX * 25.4)  # ~305 dpi -> so viewers/printers render
+                                     # this image at its true 100mm x 75mm
+                                     # physical size instead of guessing 72dpi
+                                     # and blowing the page up huge.
 
 FONT_DIR = "/usr/share/fonts/truetype/dejavu/"
 FONT_BOLD = FONT_DIR + "DejaVuSans-Bold.ttf"
@@ -58,7 +67,7 @@ def build_serial_no(dt: datetime, seq: int) -> str:
 
 
 def generate_label(vendor_name: str, vendor_id: str, vehicle_no: str,
-                    dt: datetime, seq: int) -> Image.Image:
+                    dt: datetime, seq: int, font_scale: float = 1.0) -> Image.Image:
     img = Image.new("RGB", (LABEL_W, LABEL_H), WHITE)
     draw = ImageDraw.Draw(img)
 
@@ -82,9 +91,9 @@ def generate_label(vendor_name: str, vendor_id: str, vehicle_no: str,
     row_h = table_h / n_rows
     row_ys = [ty0 + i * row_h for i in range(n_rows + 1)]
 
-    # ---- fonts (large, readable) --------------------------------------------
-    max_label_size = int(row_h * 0.42)
-    max_value_size = int(row_h * 0.42)
+    # ---- fonts (large, readable; scaled by the user's Text size slider) -----
+    max_label_size = int(row_h * 0.42 * font_scale)
+    max_value_size = int(row_h * 0.42 * font_scale)
 
     serial_no = build_serial_no(dt, seq)
 
@@ -104,7 +113,7 @@ def generate_label(vendor_name: str, vendor_id: str, vehicle_no: str,
     value_col_w = tx1 - col_split - pad_x * 2
 
     def _fit_font(text, path, max_size, max_w, min_size=14):
-        size = max_size
+        size = max(max_size, min_size)
         font = _font(path, size)
         while draw.textbbox((0, 0), text, font=font)[2] > max_w and size > min_size:
             size -= 2
@@ -138,21 +147,38 @@ def generate_label(vendor_name: str, vendor_id: str, vehicle_no: str,
 st.set_page_config(page_title="Vendor Label Generator", layout="wide")
 
 REQUIRED_COLS = ["Vendor Name", "Vendor ID", "Vehicle No"]
+IST = ZoneInfo("Asia/Kolkata") if ZoneInfo else None
+
+
+def now_ist() -> datetime:
+    """Real current date/time in India Standard Time, regardless of what
+    timezone the server the app happens to be running on is set to."""
+    if IST is not None:
+        return datetime.now(IST).replace(tzinfo=None)
+    return datetime.now()  # fallback if zoneinfo unavailable
+
 
 st.title("Vendor Label Generator")
 st.caption(
     "Upload a mastersheet (Excel) with columns **Vendor Name**, **Vendor ID**, "
     "**Vehicle No**. A 100 mm x 75 mm label is generated for every row. "
-    "Serial No (YYMMDD-HH:MM-Seq) is stamped with the real date/time at the "
-    "moment you click Generate."
+    "Serial No (YYMMDD-HH:MM-Seq) is stamped with the real IST date/time at "
+    "the moment you click Generate."
 )
 
 with st.sidebar:
     st.header("Settings")
+    font_scale = st.slider(
+        "Text size", min_value=0.6, max_value=1.8, value=1.0, step=0.1,
+        help="Increase this if the text looks too small when printed or viewed.",
+    )
     start_seq = st.number_input("Starting serial sequence", min_value=1, value=1, step=1)
     seq_reset_daily = st.checkbox(
         "Restart sequence at 1 for each new date", value=False
     )
+
+    st.markdown("---")
+    st.caption(f"Current IST time: **{now_ist():%Y-%m-%d %H:%M:%S}**")
 
     st.markdown("---")
     st.subheader("Need a template?")
@@ -195,8 +221,8 @@ if uploaded is not None:
     st.dataframe(df[REQUIRED_COLS], use_container_width=True)
 
     if st.button("Generate labels", type="primary"):
-        # Real date/time at the moment of generation, used for every row.
-        gen_dt = datetime.now()
+        # Real IST date/time at the moment of generation, used for every row.
+        gen_dt = now_ist()
 
         rows = []
         seq_by_date = {}
@@ -223,7 +249,8 @@ if uploaded is not None:
         images = []
         progress = st.progress(0.0)
         for i, r in enumerate(rows):
-            img = generate_label(r["vendor_name"], r["vendor_id"], r["vehicle_no"], r["dt"], r["seq"])
+            img = generate_label(r["vendor_name"], r["vendor_id"], r["vehicle_no"],
+                                  r["dt"], r["seq"], font_scale=font_scale)
             images.append((r, img))
             progress.progress((i + 1) / len(rows))
         progress.empty()
@@ -243,16 +270,23 @@ if uploaded is not None:
         with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
             for r, img in images:
                 png_buf = io.BytesIO()
-                img.save(png_buf, format="PNG")
+                img.save(png_buf, format="PNG", dpi=(PRINT_DPI, PRINT_DPI))
                 safe_serial = r["serial_no"].replace(":", "").replace("/", "-")
                 fname = f"{r['vendor_id']}_{r['vehicle_no']}_{safe_serial}.png"
                 zf.writestr(fname, png_buf.getvalue())
         zip_buf.seek(0)
 
         # ---- Single multi-page PDF -------------------------------------
+        # resolution= tells the PDF the true physical size (100mm x 75mm per
+        # page) instead of defaulting to 72dpi, which would otherwise create
+        # a huge poster-sized page that viewers shrink to fit — making the
+        # text look tiny even though it's drawn at full size.
         pdf_buf = io.BytesIO()
         pil_images = [img.convert("RGB") for _, img in images]
-        pil_images[0].save(pdf_buf, format="PDF", save_all=True, append_images=pil_images[1:])
+        pil_images[0].save(
+            pdf_buf, format="PDF", save_all=True, append_images=pil_images[1:],
+            resolution=PRINT_DPI,
+        )
         pdf_buf.seek(0)
 
         c1, c2 = st.columns(2)
