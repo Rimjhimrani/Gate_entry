@@ -608,6 +608,214 @@ LOGO_B64 = (
 
 st.set_page_config(page_title="AgiloGateLabel - Gate Entry Label Generator", layout="wide")
 
+# ---------------------------------------------------------------------------
+# Styling. Background stays pure white throughout — only typography, spacing,
+# borders, and a brand accent (drawn from the Agilomatrix mark's own four
+# dot colors + navy wordmark) are layered on top.
+# ---------------------------------------------------------------------------
+st.markdown(
+    """
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family=Sora:wght@600;700;800&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@500&display=swap');
+
+    :root {
+        --amx-navy: #1B2A56;
+        --amx-orange: #F2872B;
+        --amx-blue: #2F80ED;
+        --amx-green: #27AE60;
+        --amx-pink: #EB4B98;
+        --amx-surface: #F8F9FB;
+        --amx-border: #E6E9EF;
+        --amx-text: #262B3D;
+        --amx-muted: #6B7280;
+    }
+
+    html, body, [data-testid="stAppViewContainer"], [data-testid="stMain"] {
+        background-color: #FFFFFF !important;
+        color: var(--amx-text);
+        font-family: 'Inter', -apple-system, sans-serif;
+    }
+
+    h1, h2, h3, h4 {
+        font-family: 'Sora', -apple-system, sans-serif !important;
+        color: var(--amx-navy) !important;
+        letter-spacing: -0.01em;
+    }
+    h1 { font-weight: 800 !important; }
+    h2, h3, h4 { font-weight: 700 !important; }
+
+    p, li { color: var(--amx-text); }
+
+    .amx-hero-bar {
+        height: 4px;
+        width: 100%;
+        border-radius: 4px;
+        margin: 2px 0 30px 0;
+        background: linear-gradient(90deg,
+            var(--amx-blue) 0%, var(--amx-blue) 22%,
+            var(--amx-green) 22%, var(--amx-green) 47%,
+            var(--amx-pink) 47%, var(--amx-pink) 72%,
+            var(--amx-orange) 72%, var(--amx-orange) 100%);
+    }
+    .amx-footer-bar {
+        height: 3px;
+        width: 100%;
+        border-radius: 3px;
+        margin: 4px 0 14px 0;
+        opacity: 0.6;
+        background: linear-gradient(90deg,
+            var(--amx-blue) 0%, var(--amx-blue) 22%,
+            var(--amx-green) 22%, var(--amx-green) 47%,
+            var(--amx-pink) 47%, var(--amx-pink) 72%,
+            var(--amx-orange) 72%, var(--amx-orange) 100%);
+    }
+    .amx-footer {
+        text-align: center;
+        color: var(--amx-muted);
+        font-size: 0.76rem;
+        letter-spacing: 0.09em;
+        text-transform: uppercase;
+        font-family: 'Inter', sans-serif;
+        padding-bottom: 8px;
+    }
+
+    /* Sidebar — pure white, separated only by a hairline border */
+    [data-testid="stSidebar"] {
+        background-color: #FFFFFF !important;
+        border-right: 1px solid var(--amx-border);
+    }
+    [data-testid="stSidebar"] h1, [data-testid="stSidebar"] h2,
+    [data-testid="stSidebar"] h3, [data-testid="stSidebar"] h4 {
+        color: var(--amx-navy) !important;
+    }
+
+    /* Center the main content in a comfortable reading width instead of
+       stretching edge-to-edge on wide screens */
+    [data-testid="stMain"] .block-container {
+        max-width: 1040px;
+        margin: 0 auto;
+        padding-top: 2.5rem;
+    }
+
+    /* Label / field cards */
+    div[data-testid="stVerticalBlockBorderWrapper"] {
+        border-radius: 14px !important;
+        border: 1px solid var(--amx-border) !important;
+        box-shadow: 0 1px 3px rgba(27, 42, 86, 0.06);
+        transition: box-shadow .15s ease;
+    }
+    div[data-testid="stVerticalBlockBorderWrapper"]:hover {
+        box-shadow: 0 4px 14px rgba(27, 42, 86, 0.10);
+    }
+
+    /* Field labels */
+    label p, label {
+        font-family: 'Inter', sans-serif !important;
+        font-weight: 600 !important;
+        color: var(--amx-muted) !important;
+        font-size: 0.78rem !important;
+        text-transform: uppercase;
+        letter-spacing: 0.03em;
+    }
+
+    /* Text / number inputs — monospace reads as registry/ledger data,
+       fitting for gate-pass codes, plate numbers, and serials. */
+    div[data-testid="stTextInput"] input,
+    div[data-testid="stNumberInput"] input {
+        border-radius: 8px !important;
+        border: 1px solid var(--amx-border) !important;
+        font-family: 'IBM Plex Mono', monospace !important;
+        font-size: 0.92rem !important;
+        color: var(--amx-navy) !important;
+    }
+    div[data-testid="stTextInput"] input:focus,
+    div[data-testid="stNumberInput"] input:focus {
+        border-color: var(--amx-blue) !important;
+        box-shadow: 0 0 0 3px rgba(47, 128, 237, 0.15) !important;
+    }
+
+    /* Buttons */
+    button[kind="primary"] {
+        background-color: var(--amx-navy) !important;
+        border: none !important;
+        border-radius: 9px !important;
+        font-weight: 600 !important;
+        box-shadow: 0 2px 6px rgba(27, 42, 86, 0.25);
+        transition: background-color .15s ease, transform .1s ease;
+    }
+    button[kind="primary"]:hover {
+        background-color: var(--amx-orange) !important;
+        transform: translateY(-1px);
+    }
+    button[kind="secondary"] {
+        border-radius: 9px !important;
+        border: 1px solid var(--amx-navy) !important;
+        color: var(--amx-navy) !important;
+        font-weight: 600 !important;
+        background-color: #FFFFFF !important;
+    }
+    button[kind="secondary"]:hover {
+        background-color: var(--amx-surface) !important;
+        color: var(--amx-navy) !important;
+    }
+    button:focus-visible {
+        outline: 2px solid var(--amx-blue) !important;
+        outline-offset: 2px;
+    }
+
+    /* Alerts / success banners */
+    div[data-testid="stAlert"] {
+        border-radius: 10px !important;
+    }
+
+    /* File uploader — white, dashed navy-tinted border rather than a tint fill */
+    [data-testid="stFileUploaderDropzone"] {
+        border-radius: 10px !important;
+        border: 1.5px dashed var(--amx-border) !important;
+        background-color: #FFFFFF !important;
+    }
+
+    /* Hero */
+    .amx-hero {
+        text-align: center;
+        padding: 4px 0 6px 0;
+    }
+    .amx-hero img {
+        margin-bottom: 4px;
+    }
+    .amx-hero h1 {
+        margin: 8px 0 2px 0 !important;
+        font-size: 2.6rem !important;
+    }
+    .amx-hero-sub {
+        font-family: 'Inter', sans-serif;
+        font-weight: 600;
+        color: var(--amx-muted);
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+        font-size: 0.95rem;
+        margin-bottom: 18px;
+    }
+    .amx-hero-bar-wrap {
+        display: flex;
+        justify-content: center;
+    }
+    .amx-hero-bar-wrap .amx-hero-bar {
+        max-width: 320px;
+    }
+    .amx-intro {
+        max-width: 760px;
+        margin: 18px auto 0 auto;
+        text-align: center;
+        color: var(--amx-muted) !important;
+        font-size: 0.98rem;
+        line-height: 1.6;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 REQUIRED_COLS = ["Vendor Name", "Vendor ID", "Vehicle No"]
 IST = ZoneInfo("Asia/Kolkata") if ZoneInfo else None
 
@@ -624,19 +832,25 @@ def blank_row():
     return {"vendor_name": "", "vendor_id": "", "vehicle_no": "", "seq_override": ""}
 
 
-logo_col, title_col = st.columns([1, 5])
-with logo_col:
-    st.image(base64.b64decode(LOGO_B64), width=140)
-with title_col:
-    st.title("AgiloGateLabel")
-    st.markdown("##### Gate Entry Label Generator")
-st.caption(
-    "Add labels below by filling in the blanks — no spreadsheet to wrangle. "
-    "Upload an Excel file any time to bulk-prefill the fields, then keep "
-    "editing by hand. A 100 mm x 75 mm label is generated for every entry. "
-    "Serial No (YYMMDD-HH:MM-Seq): the date/time is always the real IST "
-    "time at the moment you click **Generate labels**; the Seq number "
-    "auto-increments but you can also type your own value into its blank."
+st.markdown(
+    f"""
+    <div class="amx-hero">
+        <img src="data:image/png;base64,{LOGO_B64}" width="170">
+        <h1>AgiloGateLabel</h1>
+        <div class="amx-hero-sub">Gate Entry Label Generator</div>
+        <div class="amx-hero-bar-wrap"><div class="amx-hero-bar"></div></div>
+        <div class="amx-intro">
+            Add labels below by filling in the blanks — no spreadsheet to wrangle.
+            Upload an Excel file any time to bulk-prefill the fields, then keep
+            editing by hand. A 100&nbsp;mm&nbsp;x&nbsp;75&nbsp;mm label is generated
+            for every entry. Serial No (YYMMDD-HH:MM-Seq): the date/time is always
+            the real IST time at the moment you click <strong>Generate labels</strong>;
+            the Seq number auto-increments but you can also type your own value
+            into its blank.
+        </div>
+    </div>
+    """,
+    unsafe_allow_html=True,
 )
 
 with st.sidebar:
@@ -828,5 +1042,5 @@ else:
                 mime="application/pdf",
             )
 
-st.markdown("---")
-st.caption("Designed and Developed by Agilomatrix")
+st.markdown('<div class="amx-footer-bar"></div>', unsafe_allow_html=True)
+st.markdown('<div class="amx-footer">Designed and Developed by Agilomatrix</div>', unsafe_allow_html=True)
