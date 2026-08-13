@@ -1,7 +1,11 @@
 """
 Vendor Label Generator — single-file Streamlit app.
 
-Upload an Excel mastersheet with columns: Vendor Name, Vendor ID, Vehicle No.
+Build (or upload) a mastersheet with columns: Vendor Name, Vendor ID, Vehicle No.
+The mastersheet is a fully editable grid inside the app — you can type rows
+directly, add/delete rows, or upload an Excel file to prefill it and then
+keep editing by hand. No upload is required.
+
 For every row it draws a 100 mm x 75 mm label:
 
 +------------------------------------------------+
@@ -11,12 +15,13 @@ For every row it draws a 100 mm x 75 mm label:
 | Serial No   | 260812-11:11-001                 |
 +------------------------------------------------+
 
-Serial No = YYMMDD-HH:MM-Seq, stamped with the real date/time at the moment
-the label is generated.
+Serial No = YYMMDD-HH:MM-Seq, stamped with the real IST date/time at the
+moment you click "Generate labels" — never hand-entered, always live.
 
 Run:      streamlit run app.py
-Deploy:   push this single file + requirements.txt to a repo,
-          then deploy on https://share.streamlit.io pointing at app.py
+Deploy:   push this file + requirements.txt (+ the optional packages.txt
+          included alongside it) to a repo, then deploy on
+          https://share.streamlit.io pointing at app.py
 """
 
 import io
@@ -46,24 +51,74 @@ PRINT_DPI = round(MM_TO_PX * 25.4)  # ~305 dpi -> so viewers/printers render
                                      # and blowing the page up huge.
 
 # Text size is FIXED here in code (no on-screen slider / manual control).
-# This is the fraction of each row's height the font is sized to.
-# Raise/lower this single number to change text size everywhere.
-TEXT_SIZE_FACTOR = 0.42
+# This is the fraction of each row's height the font STARTS at before being
+# shrunk (if needed) to fit its column width. Raised from the old 0.42 —
+# combined with the font-loading fix below, this is what actually makes the
+# text big and readable instead of ant-sized.
+TEXT_SIZE_FACTOR = 0.58
 
-FONT_DIR = "/usr/share/fonts/truetype/dejavu/"
-FONT_BOLD = FONT_DIR + "DejaVuSans-Bold.ttf"
-FONT_REGULAR = FONT_DIR + "DejaVuSans.ttf"
+# Never let the auto-fit shrink text below this, no matter how long the
+# value is. Previously this floor was 14px, which is why long values could
+# collapse down to a near-invisible size.
+MIN_FONT_SIZE = 30
+
+# ---------------------------------------------------------------------------
+# Font loading. On some hosts (notably a fresh Streamlit Community Cloud
+# container) the exact system path below does NOT exist unless you add a
+# packages.txt asking apt to install it — and the old code silently fell
+# back to PIL's tiny fixed-size bitmap font in that case, which is what made
+# every label render like ants regardless of TEXT_SIZE_FACTOR. This version
+# tries several system locations first, then falls back to the DejaVu font
+# files that ship *inside* Pillow itself (always present, no system install
+# needed), and only as an absolute last resort uses a scaled built-in font.
+# ---------------------------------------------------------------------------
+FONT_BOLD_CANDIDATES = [
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+    "/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf",
+    "DejaVuSans-Bold.ttf",  # resolved from Pillow's bundled fonts directory
+]
+FONT_REGULAR_CANDIDATES = [
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+    "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
+    "DejaVuSans.ttf",
+]
+
+_font_cache = {}
+
+
+def _load_font(candidates, size):
+    key = (tuple(candidates), size)
+    if key in _font_cache:
+        return _font_cache[key]
+    for path in candidates:
+        try:
+            font = ImageFont.truetype(path, size)
+            _font_cache[key] = font
+            return font
+        except OSError:
+            continue
+    # Absolute last resort: PIL's built-in font. Modern Pillow (>=10.1)
+    # lets this be scaled; older Pillow will ignore size and stay tiny.
+    try:
+        font = ImageFont.load_default(size=size)
+    except TypeError:
+        font = ImageFont.load_default()
+    _font_cache[key] = font
+    return font
+
+
+def _font_bold(size):
+    return _load_font(FONT_BOLD_CANDIDATES, size)
+
+
+def _font_regular(size):
+    return _load_font(FONT_REGULAR_CANDIDATES, size)
+
 
 BLACK = (0, 0, 0)
 WHITE = (255, 255, 255)
-
-
-def _font(path, size):
-    try:
-        return ImageFont.truetype(path, size)
-    except OSError:
-        # Fallback if DejaVu isn't present on the host (e.g. some cloud images)
-        return ImageFont.load_default()
 
 
 def build_serial_no(dt: datetime, seq: int) -> str:
@@ -111,18 +166,18 @@ def generate_label(vendor_name: str, vendor_id: str, vehicle_no: str,
 
     pad_x = int(table_w * 0.025)
 
-    # Fixed column split (label column gets ~34% of the table width, like the
-    # reference layout), independent of font size.
-    col_split = tx0 + int(table_w * 0.34)
+    # Label column gets more room than before (0.34 -> 0.38) so labels like
+    # "Vendor Name" can sit at a large size without being force-shrunk.
+    col_split = tx0 + int(table_w * 0.38)
     label_col_w = col_split - tx0 - pad_x * 2
     value_col_w = tx1 - col_split - pad_x * 2
 
-    def _fit_font(text, path, max_size, max_w, min_size=14):
+    def _fit_font(text, font_loader, max_size, max_w, min_size=MIN_FONT_SIZE):
         size = max(max_size, min_size)
-        font = _font(path, size)
+        font = font_loader(size)
         while draw.textbbox((0, 0), text, font=font)[2] > max_w and size > min_size:
             size -= 2
-            font = _font(path, size)
+            font = font_loader(size)
         return font
 
     # ---- grid lines -------------------------------------------------------
@@ -136,10 +191,10 @@ def generate_label(vendor_name: str, vendor_id: str, vehicle_no: str,
     for i, (label, value) in enumerate(rows):
         y_center = row_ys[i] + row_h / 2
 
-        l_font = _fit_font(label, FONT_BOLD, max_label_size, label_col_w)
+        l_font = _fit_font(label, _font_bold, max_label_size, label_col_w)
         draw.text((tx0 + pad_x, y_center), label, font=l_font, fill=BLACK, anchor="lm")
 
-        v_font = _fit_font(value, FONT_REGULAR, max_value_size, value_col_w)
+        v_font = _fit_font(value, _font_regular, max_value_size, value_col_w)
         draw.text((col_split + pad_x, y_center), value, font=v_font, fill=BLACK, anchor="lm")
 
     return img
@@ -165,10 +220,11 @@ def now_ist() -> datetime:
 
 st.title("Vendor Label Generator")
 st.caption(
-    "Upload a mastersheet (Excel) with columns **Vendor Name**, **Vendor ID**, "
-    "**Vehicle No**. A 100 mm x 75 mm label is generated for every row. "
-    "Serial No (YYMMDD-HH:MM-Seq) is stamped with the real IST date/time at "
-    "the moment you click Generate."
+    "Build your mastersheet right here — add rows, edit cells, or upload an "
+    "Excel file to prefill the table below and then tweak it by hand. "
+    "A 100 mm x 75 mm label is generated for every row. Serial No "
+    "(YYMMDD-HH:MM-Seq) is stamped with the real IST date/time at the "
+    "moment you click **Generate labels** — you never type it in."
 )
 
 with st.sidebar:
@@ -182,7 +238,9 @@ with st.sidebar:
     st.caption(f"Current IST time: **{now_ist():%Y-%m-%d %H:%M:%S}**")
 
     st.markdown("---")
-    st.subheader("Need a template?")
+    st.subheader("Optional: upload to prefill")
+    uploaded = st.file_uploader("Upload mastersheet (.xlsx)", type=["xlsx"])
+
     template_df = pd.DataFrame(
         {
             "Vendor Name": ["Pheonix Harness"],
@@ -199,27 +257,61 @@ with st.sidebar:
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
 
-uploaded = st.file_uploader("Upload mastersheet (.xlsx)", type=["xlsx"])
+# ---------------------------------------------------------------------------
+# Editable mastersheet. Seeds from an uploaded file the first time it's
+# picked, but from then on the in-app grid (which the user can freely add
+# to, delete from, or edit) is the source of truth — no upload is required
+# at all to use this app.
+# ---------------------------------------------------------------------------
+if "mastersheet_df" not in st.session_state:
+    st.session_state.mastersheet_df = pd.DataFrame(
+        {"Vendor Name": [""], "Vendor ID": [""], "Vehicle No": [""]}
+    )
 
 if uploaded is not None:
-    try:
-        df = pd.read_excel(uploaded)
-    except Exception as e:
-        st.error(f"Could not read the Excel file: {e}")
-        st.stop()
+    if st.session_state.get("_last_uploaded_name") != uploaded.name:
+        try:
+            up_df = pd.read_excel(uploaded)
+        except Exception as e:
+            st.error(f"Could not read the Excel file: {e}")
+            st.stop()
+        up_df.columns = [str(c).strip() for c in up_df.columns]
+        missing = [c for c in REQUIRED_COLS if c not in up_df.columns]
+        if missing:
+            st.error(
+                f"The uploaded file is missing required column(s): {', '.join(missing)}. "
+                f"Required headers are exactly: {', '.join(REQUIRED_COLS)}"
+            )
+            st.stop()
+        up_df = up_df[REQUIRED_COLS].dropna(how="all").reset_index(drop=True)
+        st.session_state.mastersheet_df = up_df.astype(str)
+        st.session_state._last_uploaded_name = uploaded.name
+        st.success(f"Loaded {len(up_df)} row(s) from '{uploaded.name}' — edit freely below.")
 
-    df.columns = [str(c).strip() for c in df.columns]
-    missing = [c for c in REQUIRED_COLS if c not in df.columns]
-    if missing:
-        st.error(
-            f"The mastersheet is missing required column(s): {', '.join(missing)}. "
-            f"Required headers are exactly: {', '.join(REQUIRED_COLS)}"
-        )
-        st.stop()
+st.subheader("Mastersheet (editable)")
+st.caption("Type directly into any cell. Use the ⋮ menu or the blank bottom row to add rows; select a row and press delete to remove it.")
+edited_df = st.data_editor(
+    st.session_state.mastersheet_df,
+    num_rows="dynamic",
+    use_container_width=True,
+    column_config={
+        "Vendor Name": st.column_config.TextColumn(required=True),
+        "Vendor ID": st.column_config.TextColumn(required=True),
+        "Vehicle No": st.column_config.TextColumn(required=True),
+    },
+    key="mastersheet_editor",
+)
+st.session_state.mastersheet_df = edited_df
 
-    df = df.dropna(subset=REQUIRED_COLS, how="all").reset_index(drop=True)
-    st.success(f"Loaded {len(df)} row(s) from the mastersheet.")
-    st.dataframe(df[REQUIRED_COLS], use_container_width=True)
+df = edited_df.copy()
+df.columns = [str(c).strip() for c in df.columns]
+df = df.dropna(subset=REQUIRED_COLS, how="all")
+df = df[df[REQUIRED_COLS].apply(lambda r: any(str(v).strip() for v in r), axis=1)].reset_index(drop=True)
+
+if df.empty:
+    st.info("Add at least one row (Vendor Name, Vendor ID, Vehicle No) to generate labels.")
+else:
+    st.success(f"{len(df)} row(s) ready.")
 
     if st.button("Generate labels", type="primary"):
         # Real IST date/time at the moment of generation, used for every row.
@@ -305,5 +397,3 @@ if uploaded is not None:
                 file_name="labels.pdf",
                 mime="application/pdf",
             )
-else:
-    st.info("Upload a mastersheet to get started, or download the template from the sidebar.")
