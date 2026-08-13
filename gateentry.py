@@ -1,12 +1,13 @@
 """
 Vendor Label Generator — single-file Streamlit app.
 
-Build (or upload) a mastersheet with columns: Vendor Name, Vendor ID, Vehicle No.
-The mastersheet is a fully editable grid inside the app — you can type rows
-directly, add/delete rows, or upload an Excel file to prefill it and then
-keep editing by hand. No upload is required.
+Build your label list right here in the app: each label (Vendor Name,
+Vendor ID, Vehicle No.) is entered as its own set of "fill in the blank"
+text fields — there is no spreadsheet-style grid to edit. You can also
+upload an Excel file to bulk-prefill the fields, then keep tweaking them
+by hand. No upload is required.
 
-For every row it draws a 100 mm x 75 mm label:
+For every entry it draws a 100 mm x 75 mm label:
 
 +------------------------------------------------+
 | Vendor Name | Pheonix Harness                  |
@@ -15,8 +16,10 @@ For every row it draws a 100 mm x 75 mm label:
 | Serial No   | 260812-11:11-001                 |
 +------------------------------------------------+
 
-Serial No = YYMMDD-HH:MM-Seq, stamped with the real IST date/time at the
-moment you click "Generate labels" — never hand-entered, always live.
+Serial No = YYMMDD-HH:MM-Seq. The date/time part is always the real IST
+date/time stamped at the moment you click "Generate labels". The Seq part
+auto-increments by default, but is also a fill-in-the-blank field per
+label if you want to override it by hand.
 
 Run:      streamlit run app.py
 Deploy:   push this file + requirements.txt (+ the optional packages.txt
@@ -52,15 +55,12 @@ PRINT_DPI = round(MM_TO_PX * 25.4)  # ~305 dpi -> so viewers/printers render
 
 # Text size is FIXED here in code (no on-screen slider / manual control).
 # This is the fraction of each row's height the font STARTS at before being
-# shrunk (if needed) to fit its column width. Raised from the old 0.42 —
-# combined with the font-loading fix below, this is what actually makes the
-# text big and readable instead of ant-sized.
+# shrunk (if needed) to fit its column width/height.
 TEXT_SIZE_FACTOR = 0.58
 
 # Never let the auto-fit shrink text below this, no matter how long the
-# value is. Previously this floor was 14px, which is why long values could
-# collapse down to a near-invisible size.
-MIN_FONT_SIZE = 30
+# value is (it will wrap onto more lines instead of collapsing further).
+MIN_FONT_SIZE = 22
 
 # ---------------------------------------------------------------------------
 # Font loading. On some hosts (notably a fresh Streamlit Community Cloud
@@ -121,13 +121,59 @@ BLACK = (0, 0, 0)
 WHITE = (255, 255, 255)
 
 
-def build_serial_no(dt: datetime, seq: int) -> str:
-    """Serial format: YYMMDD-HH:MM-SSS."""
-    return f"{dt:%y%m%d}-{dt:%H:%M}-{seq:03d}"
+def build_serial_no(dt: datetime, seq) -> str:
+    """Serial format: YYMMDD-HH:MM-SSS. `seq` may be an int (zero-padded to
+    3 digits) or a string override typed in by hand, used as-is."""
+    if isinstance(seq, str):
+        seq_part = seq.strip() or "001"
+    else:
+        seq_part = f"{int(seq):03d}"
+    return f"{dt:%y%m%d}-{dt:%H:%M}-{seq_part}"
+
+
+def _wrap_text(text, font, max_w, draw):
+    """Greedy word-wrap of `text` so every line fits within max_w."""
+    words = str(text).split()
+    if not words:
+        return [""]
+    lines = []
+    current = words[0]
+    for w in words[1:]:
+        test = f"{current} {w}"
+        if draw.textbbox((0, 0), test, font=font)[2] <= max_w:
+            current = test
+        else:
+            lines.append(current)
+            current = w
+    lines.append(current)
+    return lines
+
+
+def _fit_wrapped(text, font_loader, max_size, max_w, max_h, draw,
+                  min_size=MIN_FONT_SIZE):
+    """Find the largest font size (down to min_size) at which `text`,
+    word-wrapped to max_w, fits within max_h. Returns (font, lines,
+    line_height)."""
+    size = max(max_size, min_size)
+    best = None
+    while size >= min_size:
+        font = font_loader(size)
+        lines = _wrap_text(text, font, max_w, draw)
+        bbox = font.getbbox("Ag")
+        line_h = (bbox[3] - bbox[1]) * 1.25
+        total_h = line_h * len(lines)
+        fits_w = all(draw.textbbox((0, 0), ln, font=font)[2] <= max_w for ln in lines)
+        if total_h <= max_h and fits_w:
+            return font, lines, line_h
+        best = (font, lines, line_h)
+        size -= 2
+    # Hit the floor: return the smallest attempt even if it slightly
+    # overflows, rather than shrinking indefinitely.
+    return best
 
 
 def generate_label(vendor_name: str, vendor_id: str, vehicle_no: str,
-                    dt: datetime, seq: int) -> Image.Image:
+                    dt: datetime, seq) -> Image.Image:
     img = Image.new("RGB", (LABEL_W, LABEL_H), WHITE)
     draw = ImageDraw.Draw(img)
 
@@ -165,19 +211,21 @@ def generate_label(vendor_name: str, vendor_id: str, vehicle_no: str,
     ]
 
     pad_x = int(table_w * 0.025)
+    pad_y = int(row_h * 0.08)
 
     # Label column gets more room than before (0.34 -> 0.38) so labels like
     # "Vendor Name" can sit at a large size without being force-shrunk.
     col_split = tx0 + int(table_w * 0.38)
     label_col_w = col_split - tx0 - pad_x * 2
     value_col_w = tx1 - col_split - pad_x * 2
+    value_col_h = row_h - pad_y * 2
 
-    def _fit_font(text, font_loader, max_size, max_w, min_size=MIN_FONT_SIZE):
+    def _fit_label_font(text, max_size, max_w, min_size=MIN_FONT_SIZE):
         size = max(max_size, min_size)
-        font = font_loader(size)
+        font = _font_bold(size)
         while draw.textbbox((0, 0), text, font=font)[2] > max_w and size > min_size:
             size -= 2
-            font = font_loader(size)
+            font = _font_bold(size)
         return font
 
     # ---- grid lines -------------------------------------------------------
@@ -191,11 +239,23 @@ def generate_label(vendor_name: str, vendor_id: str, vehicle_no: str,
     for i, (label, value) in enumerate(rows):
         y_center = row_ys[i] + row_h / 2
 
-        l_font = _fit_font(label, _font_bold, max_label_size, label_col_w)
-        draw.text((tx0 + pad_x, y_center), label, font=l_font, fill=BLACK, anchor="lm")
+        # Headers: bold font PLUS a text stroke so they read as clearly
+        # bolder than the values even on hosts where the bold font file
+        # fails to load and PIL falls back to a regular-weight font.
+        l_font = _fit_label_font(label, max_label_size, label_col_w)
+        draw.text((tx0 + pad_x, y_center), label, font=l_font, fill=BLACK,
+                   anchor="lm", stroke_width=1, stroke_fill=BLACK)
 
-        v_font = _fit_font(value, _font_regular, max_value_size, value_col_w)
-        draw.text((col_split + pad_x, y_center), value, font=v_font, fill=BLACK, anchor="lm")
+        # Values: word-wrap to the column width; only shrink font size if
+        # wrapped text still doesn't fit vertically in the row.
+        v_font, v_lines, v_line_h = _fit_wrapped(
+            value, _font_regular, max_value_size, value_col_w, value_col_h, draw
+        )
+        block_h = v_line_h * len(v_lines)
+        start_y = y_center - block_h / 2 + v_line_h / 2
+        for li, line in enumerate(v_lines):
+            draw.text((col_split + pad_x, start_y + li * v_line_h), line,
+                       font=v_font, fill=BLACK, anchor="lm")
 
     return img
 
@@ -218,13 +278,18 @@ def now_ist() -> datetime:
     return datetime.now()  # fallback if zoneinfo unavailable
 
 
+def blank_row():
+    return {"vendor_name": "", "vendor_id": "", "vehicle_no": "", "seq_override": ""}
+
+
 st.title("Vendor Label Generator")
 st.caption(
-    "Build your mastersheet right here — add rows, edit cells, or upload an "
-    "Excel file to prefill the table below and then tweak it by hand. "
-    "A 100 mm x 75 mm label is generated for every row. Serial No "
-    "(YYMMDD-HH:MM-Seq) is stamped with the real IST date/time at the "
-    "moment you click **Generate labels** — you never type it in."
+    "Add labels below by filling in the blanks — no spreadsheet to wrangle. "
+    "Upload an Excel file any time to bulk-prefill the fields, then keep "
+    "editing by hand. A 100 mm x 75 mm label is generated for every entry. "
+    "Serial No (YYMMDD-HH:MM-Seq): the date/time is always the real IST "
+    "time at the moment you click **Generate labels**; the Seq number "
+    "auto-increments but you can also type your own value into its blank."
 )
 
 with st.sidebar:
@@ -258,15 +323,13 @@ with st.sidebar:
     )
 
 # ---------------------------------------------------------------------------
-# Editable mastersheet. Seeds from an uploaded file the first time it's
-# picked, but from then on the in-app grid (which the user can freely add
-# to, delete from, or edit) is the source of truth — no upload is required
-# at all to use this app.
+# Editable label list. Each label is its own set of fill-in-the-blank text
+# fields — never a spreadsheet grid. Uploading an Excel file bulk-prefills
+# these fields the first time it's picked; after that the fields you've
+# typed into are the source of truth. No upload is required at all.
 # ---------------------------------------------------------------------------
-if "mastersheet_df" not in st.session_state:
-    st.session_state.mastersheet_df = pd.DataFrame(
-        {"Vendor Name": [""], "Vendor ID": [""], "Vehicle No": [""]}
-    )
+if "rows" not in st.session_state:
+    st.session_state.rows = [blank_row()]
 
 if uploaded is not None:
     if st.session_state.get("_last_uploaded_name") != uploaded.name:
@@ -283,35 +346,52 @@ if uploaded is not None:
                 f"Required headers are exactly: {', '.join(REQUIRED_COLS)}"
             )
             st.stop()
-        up_df = up_df[REQUIRED_COLS].dropna(how="all").reset_index(drop=True)
-        st.session_state.mastersheet_df = up_df.astype(str)
+        up_df = up_df[REQUIRED_COLS].dropna(how="all").fillna("").astype(str)
+        st.session_state.rows = [
+            {
+                "vendor_name": r["Vendor Name"],
+                "vendor_id": r["Vendor ID"],
+                "vehicle_no": r["Vehicle No"],
+                "seq_override": "",
+            }
+            for _, r in up_df.iterrows()
+        ] or [blank_row()]
         st.session_state._last_uploaded_name = uploaded.name
-        st.success(f"Loaded {len(up_df)} row(s) from '{uploaded.name}' — edit freely below.")
+        st.success(f"Loaded {len(st.session_state.rows)} label(s) from '{uploaded.name}' — edit the blanks below.")
 
-st.subheader("Mastersheet (editable)")
-st.caption("Type directly into any cell. Use the ⋮ menu or the blank bottom row to add rows; select a row and press delete to remove it.")
-edited_df = st.data_editor(
-    st.session_state.mastersheet_df,
-    num_rows="dynamic",
-    use_container_width=True,
-    column_config={
-        "Vendor Name": st.column_config.TextColumn(required=True),
-        "Vendor ID": st.column_config.TextColumn(required=True),
-        "Vehicle No": st.column_config.TextColumn(required=True),
-    },
-    key="mastersheet_editor",
-)
-st.session_state.mastersheet_df = edited_df
+st.subheader("Labels")
+st.caption("Fill in the blanks for each label. Add more labels or remove ones you don't need.")
 
-df = edited_df.copy()
-df.columns = [str(c).strip() for c in df.columns]
-df = df.dropna(subset=REQUIRED_COLS, how="all")
-df = df[df[REQUIRED_COLS].apply(lambda r: any(str(v).strip() for v in r), axis=1)].reset_index(drop=True)
+remove_idx = None
+for i, row in enumerate(st.session_state.rows):
+    with st.container(border=True):
+        c1, c2, c3, c4, c5 = st.columns([3, 2, 2, 2, 1])
+        row["vendor_name"] = c1.text_input("Vendor Name", value=row["vendor_name"], key=f"vn_{i}")
+        row["vendor_id"] = c2.text_input("Vendor ID", value=row["vendor_id"], key=f"vid_{i}")
+        row["vehicle_no"] = c3.text_input("Vehicle No", value=row["vehicle_no"], key=f"veh_{i}")
+        row["seq_override"] = c4.text_input("Seq No (optional)", value=row["seq_override"],
+                                             key=f"seq_{i}", placeholder="auto")
+        c5.markdown("<br>", unsafe_allow_html=True)
+        if c5.button("✕", key=f"rm_{i}", help="Remove this label"):
+            remove_idx = i
 
-if df.empty:
-    st.info("Add at least one row (Vendor Name, Vendor ID, Vehicle No) to generate labels.")
+if remove_idx is not None:
+    st.session_state.rows.pop(remove_idx)
+    st.rerun()
+
+if st.button("+ Add label"):
+    st.session_state.rows.append(blank_row())
+    st.rerun()
+
+active_rows = [
+    r for r in st.session_state.rows
+    if any(str(r[k]).strip() for k in ("vendor_name", "vendor_id", "vehicle_no"))
+]
+
+if not active_rows:
+    st.info("Fill in at least one label's blanks (Vendor Name, Vendor ID, Vehicle No) to generate labels.")
 else:
-    st.success(f"{len(df)} row(s) ready.")
+    st.success(f"{len(active_rows)} label(s) ready.")
 
     if st.button("Generate labels", type="primary"):
         # Real IST date/time at the moment of generation, used for every row.
@@ -320,8 +400,11 @@ else:
         rows = []
         seq_by_date = {}
         running_seq = int(start_seq)
-        for _, r in df.iterrows():
-            if seq_reset_daily:
+        for r in active_rows:
+            override = str(r.get("seq_override", "")).strip()
+            if override:
+                seq = override
+            elif seq_reset_daily:
                 key = gen_dt.date()
                 seq_by_date[key] = seq_by_date.get(key, int(start_seq) - 1) + 1
                 seq = seq_by_date[key]
@@ -330,9 +413,9 @@ else:
                 running_seq += 1
             rows.append(
                 {
-                    "vendor_name": str(r["Vendor Name"]),
-                    "vendor_id": str(r["Vendor ID"]),
-                    "vehicle_no": str(r["Vehicle No"]),
+                    "vendor_name": str(r["vendor_name"]),
+                    "vendor_id": str(r["vendor_id"]),
+                    "vehicle_no": str(r["vehicle_no"]),
                     "dt": gen_dt,
                     "seq": seq,
                     "serial_no": build_serial_no(gen_dt, seq),
